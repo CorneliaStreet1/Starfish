@@ -4,8 +4,12 @@ package org.graph.engine.wrapper;
 import lombok.Data;
 import lombok.experimental.Accessors;
 import org.apache.commons.lang3.StringUtils;
+import org.graph.engine.callback.ICondition;
+import org.graph.engine.callback.IOperatorCallback;
+import org.graph.engine.domain.enums.NodeWrapperState;
 import org.graph.engine.domain.exception.GraphConstructionException;
 import org.graph.engine.operator.IOperator;
+import org.graph.engine.operator.OperatorResult;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -20,6 +24,39 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class GraphNodeWrapper<P, V> {
 
     // todo equals方法override一下
+
+
+    /**
+     * OP返回的结果
+     */
+    private volatile OperatorResult<V> operatorResult = OperatorResult.defaultResult();
+
+    /**
+     * 本OP执行前的回调
+     */
+    private IOperatorCallback beforeThisOp;
+    /**
+     * 本OP执行后的回调
+     */
+    private IOperatorCallback afterThisOp;
+
+    /**
+     * 执行该节点的线程
+     */
+    private Thread thread;
+
+    /**
+     * 当前节点执行的状态
+     */
+    private AtomicInteger nodeWrapperState = new AtomicInteger(NodeWrapperState.INIT.getState());
+
+    /**
+     * 条件判断，根据前驱节点的结果判断是否可以执行该节点
+     * 注意：依赖的节点全都是强依赖时，不起作用，主要使用在弱依赖的场景
+     * 比如：1 依赖 2、3、4，节点1执行的条件是2、3、4中执行完的个数 >=2, 此时可以通过条件判断，如果不满足条件时返回false
+     */
+    private ICondition condition;
+
 
     /**
      * 强依赖于该OP的后续wrapper集合，是nextWrappers的子集
@@ -76,6 +113,10 @@ public class GraphNodeWrapper<P, V> {
      * 依赖该OP的后续OP集合
      */
     private Set<GraphNodeWrapper<?, ?>> nextWrappers;
+
+    public boolean compareAndSetState(int expect, int update) {
+        return this.nodeWrapperState.compareAndSet(expect, update);
+    }
 
 
     public GraphNodeWrapper<P, V> init() {

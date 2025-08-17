@@ -1,19 +1,42 @@
 package org.graph.engine;
 
 
+import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.MapUtils;
+import org.graph.engine.context.GraphContext;
 import org.graph.engine.domain.enums.EngineState;
+import org.graph.engine.domain.enums.NodeWrapperState;
+import org.graph.engine.domain.enums.ResultState;
 import org.graph.engine.util.ConvertUtil;
 import org.graph.engine.wrapper.DirectedAcyclicGraphWrapper;
 import org.graph.engine.wrapper.GraphNodeWrapper;
 
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
 
 public class DagScheduler implements IGraphEngine {
+
+
+    /**
+     * 工作线程的快照
+     */
+    private ConcurrentMap<Thread, GraphNodeWrapper<?, ?>> runningThreadMap = Maps.newConcurrentMap();
+
+    /**
+     * 工作线程池
+     */
+    private ExecutorService executor;
+
+
+    /**
+     * 主线程阻塞等待所有结束节点执行完成
+     * 阻塞主线程, 直到计数跌零
+     */
+    private CountDownLatch syncLatch;
 
     /**
      * 编排流程的超时时间，单位：毫秒
@@ -25,6 +48,11 @@ public class DagScheduler implements IGraphEngine {
      */
     private EngineState engineState = EngineState.INIT;
 
+
+    /**
+     * 执行引擎上下文
+     */
+    private GraphContext graphContext = new GraphContext();
 
     /**
      * 阻塞主线程，等待流程执行结束，根据依赖关系自动解析出开始节点
@@ -48,17 +76,103 @@ public class DagScheduler implements IGraphEngine {
                 dagWrapper.getBeforeDagSchedule().callback();
             }
             this.engineState = EngineState.RUNNING;
-
             List<GraphNodeWrapper<?, ?>> beginWrappers = ConvertUtil.set2List(dagWrapper.getStartNodesWrapperSet());
             if (CollectionUtils.isEmpty(beginWrappers)) {
+                this.engineState = EngineState.FINISHED;
                 return false;
             }
 
+            //设置DAG引擎上下文，上下文的生命周期从开始节点到结束节点之间
+            GraphContextHolder.set(graphContext);
+            /**
+             * 初始化信号量,每个结束节点执行完毕则计数减一
+             * 所有的结束节点都执行完毕后, 计数归零, 主线程才解除阻塞
+             */
+            syncLatch = new CountDownLatch(dagWrapper.getEndNodesWrapperSet().size());
+
+            for (GraphNodeWrapper<?, ?> beginWrapper : beginWrappers) {
+
+            }
         }
         catch (Throwable e) {
 
         }
     }
+
+    private void runNode(GraphNodeWrapper<?, ?> node, DirectedAcyclicGraphWrapper dagWrapper) {
+
+        if (engineState != EngineState.RUNNING) {
+            return;
+        }
+
+        /**
+         * 判断节点是否可以执行:
+         * 1. 准入条件满足(所有节点均是强依赖节点时, 准入条件不起作用,满足2和3即可)
+         * 2. 所有强依赖节点均已执行完毕
+         * 3. 节点还未执行
+         */
+        if (node.getCondition() != null && node.getNodeWrapperState().get() == NodeWrapperState.INIT.getState()) {
+            synchronized (node.getCondition()) {
+                //当前节点可以执行时，中断弱依赖的节点
+                if (node.getCondition().test(node)) {
+                    // todo this.interruptOrUpdateDependSkipState(wrapper);
+                }
+                else {
+                    /**
+                     * 不满足条件,则只有所有强依赖节点执行完毕才可以执行当前节点
+                     * 也即任意前置依赖节点还未执行完毕,就不可执行当前节点
+                     */
+                    Set<GraphNodeWrapper<?, ?>> dependWrappers = node.getDependWrappers();
+                    boolean anyDependNodeNotEnd = dependWrappers.stream()
+                            .filter(Objects::nonNull)
+                            .anyMatch(nodeWrapper -> nodeWrapper.getNodeWrapperState().get() <= NodeWrapperState.RUNNING.getState());
+                    if (anyDependNodeNotEnd) {
+                        return;
+                    }
+                }
+            }
+        }
+        //节点状态不等于INIT，说明该节点已经执行过
+        if (!node.compareAndSetState(NodeWrapperState.INIT.getState(), NodeWrapperState.RUNNING.getState())) {
+            return;
+        }
+
+        // 到这里才说明节点是第一次执行
+        executor.submit(
+                ()-> nodeExecute(node, dagWrapper)
+        );
+    }
+
+    private void nodeExecute(GraphNodeWrapper<?, ?> node, DirectedAcyclicGraphWrapper dagWrapper) {
+        Thread thread = Thread.currentThread();
+        try {
+            node.setThread(thread);
+            this.runningThreadMap.put(thread, node);
+            // 执行每个Op执行前的都要执行的回调
+            if (dagWrapper.getBeforeEveryOp() != null) {
+                dagWrapper.getBeforeEveryOp().call(node);
+            }
+
+            // 执行this Op执行前的回调
+            if (node.getBeforeThisOp() != null) {
+                node.getBeforeThisOp().call(node);
+            }
+
+            this.doNodeExecute(node);
+
+            node.compareAndSetState(NodeWrapperState.RUNNING.getState(), NodeWrapperState.FINISH.getState());
+            node.getOperatorResult().setResultState(ResultState.SUCCESS);
+        }
+        catch (Throwable e) {
+
+        }
+        finally {
+
+        }
+    }
+
+
+
 
     private void parseNextDepends4DAG(DirectedAcyclicGraphWrapper dagWrapper) {
         if (dagWrapper.isNextDependParsed()) {

@@ -6,10 +6,10 @@ import jakarta.annotation.Nonnull;
 import lombok.Data;
 import lombok.experimental.Accessors;
 import org.graph.engine.callback.IDagCallback;
+import org.graph.engine.callback.IOperatorCallback;
 
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
 
 /**
  * 有向无环图包装类
@@ -17,6 +17,16 @@ import java.util.function.Function;
 @Data
 @Accessors(chain = true)
 public class DirectedAcyclicGraphWrapper {
+
+
+    /**
+     * 每个OP执行前的回调
+     */
+    private IOperatorCallback beforeEveryOp;
+    /**
+     * 每个OP执行后的回调
+     */
+    private IOperatorCallback afterEveryOp;
 
     /**
      * DAG引擎执行前回调

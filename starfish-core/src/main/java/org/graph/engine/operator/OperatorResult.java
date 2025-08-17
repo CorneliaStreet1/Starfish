@@ -27,6 +27,10 @@ public class OperatorResult<Output> {
     public OperatorResult(Output result, ResultState resultState) {
         this(result, resultState, null);
     }
+
+    public static <V> OperatorResult<V> defaultResult() {
+        return new OperatorResult<>(null, ResultState.DEFAULT);
+    }
     @Override
     public String toString() {
         return "OperatorResult{" +
